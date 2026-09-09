@@ -81,10 +81,15 @@ import AVFoundation
         }
         if let index = arguments.firstIndex(of: "--audio-check"), arguments.indices.contains(index + 1) {
             let path = arguments[index + 1]
+            var duration = 7.0
+            if let option = arguments.firstIndex(of: "--check-duration"), arguments.indices.contains(option + 1),
+               let seconds = Double(arguments[option + 1]), seconds.isFinite {
+                duration = min(60, max(7, seconds))
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let model = self?.model else { NSApp.terminate(nil); return }
                 if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { model.start() }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
                     let report = model.diagnostics
                     if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
                         try? data.write(to: URL(fileURLWithPath: path))

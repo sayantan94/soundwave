@@ -65,6 +65,12 @@ public struct GestureRecognizer {
         }
 
         let direction = confidence >= response.confidence && abs(motion) >= 0.15 ? (motion > 0 ? 1 : -1) : 0
+        // Evidence against a stroke still counts even when it is too weak to
+        // accept an opposite stroke. Otherwise alternating motion can add up.
+        if candidate != 0 && motion * Double(candidate) < -0.15 && confidence >= 0.35 {
+            clearCandidate()
+            phase = .ready
+        }
         if direction == 0 {
             if let lastEvidence, time - lastEvidence > 0.04 { clearCandidate(); phase = .ready }
             return result()

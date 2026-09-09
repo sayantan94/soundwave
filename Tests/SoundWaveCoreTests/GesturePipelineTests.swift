@@ -2,6 +2,29 @@ import XCTest
 @testable import SoundWaveCore
 
 final class GesturePipelineTests: XCTestCase {
+    func testSteadyBackgroundToneDoesNotBecomeAGestureWhenPilotFades() {
+        for shift in [-150.0, 150.0] {
+            let rate = 48000.0
+            let detector = DopplerDetector(sampleRate: rate, frequency: 20000)
+            var recognizer = GestureRecognizer()
+            var events: [Int] = []
+            for start in stride(from: 0, to: Int(rate * 4.5), by: 512) {
+                let audio = (start..<(start + 512)).map { index -> Float in
+                    let time = Double(index) / rate
+                    let pilot = time < 3.7 ? 0.15 : 0.035
+                    return Float(pilot * sin(2 * .pi * 20000 * time)
+                        + 0.015 * sin(2 * .pi * (20000 + shift) * time))
+                }
+                for frame in detector.process(audio) {
+                    let result = recognizer.update(motion: frame.motion, confidence: frame.confidence, activity: frame.activity,
+                        signalGood: frame.signalGood && frame.calibration >= 1, time: frame.sampleTime)
+                    if let direction = result.acceptedDirection { events.append(direction) }
+                }
+            }
+            XCTAssertTrue(events.isEmpty, "A stationary background tone chose \(events)")
+        }
+    }
+
     func testChangingToneLoudnessCannotChooseADesktopDirection() {
         // A hand can change the direct tone's loudness without a directional echo.
         // Amplitude modulation creates equal sidebands and must remain ambiguous.

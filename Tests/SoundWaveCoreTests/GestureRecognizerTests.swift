@@ -70,4 +70,20 @@ final class GestureRecognizerTests: XCTestCase {
         time += 2
         XCTAssertTrue(feed(&recognizer, time: &time, duration: 0.3, motion: 0.8).isEmpty)
     }
+
+    func testOpposingMotionBelowAcceptanceConfidenceBreaksTheStroke() {
+        for sign in [-1.0, 1.0] {
+            var recognizer = GestureRecognizer(response: .deliberate); var time = 0.0
+            _ = feed(&recognizer, time: &time, duration: 0.2)
+            for _ in 0..<25 {
+                XCTAssertTrue(feed(&recognizer, time: &time, duration: 0.01,
+                    motion: sign * 0.7, confidence: 0.9).isEmpty)
+                XCTAssertTrue(feed(&recognizer, time: &time, duration: 0.01,
+                    motion: -sign * 0.7, confidence: 0.65).isEmpty)
+            }
+            _ = feed(&recognizer, time: &time, duration: 0.2)
+            XCTAssertEqual(feed(&recognizer, time: &time, duration: 0.1,
+                motion: -sign * 0.7, confidence: 0.9), [Int(-sign)])
+        }
+    }
 }

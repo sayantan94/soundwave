@@ -13,6 +13,7 @@ public struct Detection {
     public var activity: Double = 0
     public var sampleTime: Double = 0
     public var signalToNoiseDB: Double = 0
+    public var corroborated: Bool = false
 }
 
 /// A streaming, overlapping FFT detector. All access belongs on one analysis queue.
@@ -29,6 +30,8 @@ public final class DopplerDetector {
     private var imaginary: [Float]
     private var pending: [Float] = []
     private var baseline: [Double]
+    private var absoluteBaseline: [Double]
+    private let bandwidth: Double
     private var frames = 0
     private var candidate = 0
     private var consecutive = 0
@@ -36,16 +39,18 @@ public final class DopplerDetector {
     private let calibrationFrames: Int
     private var processedSamples = 0
 
-    public init(sampleRate: Double, frequency: Double) {
+    public init(sampleRate: Double, frequency: Double, bandwidth: Double = 650) {
         precondition(sampleRate >= 44100 && frequency > 1000 && frequency + 1000 < sampleRate / 2)
         self.sampleRate = sampleRate
         self.frequency = frequency
+        self.bandwidth = min(650, max(150, bandwidth))
         self.setup = vDSP_create_fftsetup(12, FFTRadix(kFFTRadix2))!
         window = [Float](repeating: 0, count: size)
         imaginaryWindow = window
         real = window
         imaginary = window
         baseline = [Double](repeating: 0, count: size / 2)
+        absoluteBaseline = baseline
         calibrationFrames = Int(2.5 * sampleRate / Double(hop))
         settlingFrames = Int(0.3 * sampleRate / Double(hop))
         vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
@@ -100,7 +105,7 @@ public final class DopplerDetector {
     private func analyze() -> Detection {
         let binHz = sampleRate / Double(size)
         let center = Int((frequency / binHz).rounded())
-        let radius = Int(650 / binHz)
+        let radius = Int(bandwidth / binHz)
         let range = (center - radius)...(center + radius)
         let normalization = pow(Double(size) / 4, 2)
         var power = [Double](repeating: 0, count: size / 2)
@@ -122,7 +127,10 @@ public final class DopplerDetector {
             // Average relative power so a volume change doesn't look like a gesture.
             if signalGood {
                 frames += 1
-                for i in range { baseline[i] += (power[i] / max(pilot, 1e-12) - baseline[i]) / Double(frames) }
+                for i in range {
+                    baseline[i] += (power[i] / max(pilot, 1e-12) - baseline[i]) / Double(frames)
+                    absoluteBaseline[i] += (power[i] - absoluteBaseline[i]) / Double(frames)
+                }
             }
             return Detection(calibration: Double(frames) / Double(calibrationFrames), signalDB: signalDB, signalGood: signalGood, motion: 0, shiftHz: 0, spectrum: spectrum)
         }
@@ -134,7 +142,8 @@ public final class DopplerDetector {
         let threshold = 0.025 * pow(0.08, min(1, max(0, sensitivity)))
         for i in range where abs(i - center) >= deadBand {
             let relative = power[i] / max(pilot, 1e-12)
-            let floor = max(baseline[i] * 3, noise / max(pilot, 1e-12) * 6)
+            // A fading pilot must not amplify stationary ambient tones into motion.
+            let floor = max(baseline[i] * 3, absoluteBaseline[i] * 3 / max(pilot, 1e-12), noise / max(pilot, 1e-12) * 6)
             let excess = max(0, relative - floor - threshold)
             if i < center {
                 low += excess
@@ -161,6 +170,7 @@ public final class DopplerDetector {
             for i in range {
                 let relative = power[i] / max(pilot, 1e-12)
                 baseline[i] += 0.002 * (relative - baseline[i])
+                absoluteBaseline[i] += 0.002 * (power[i] - absoluteBaseline[i])
             }
         }
         var detection = Detection(calibration: 1, signalDB: signalDB, signalGood: signalGood, motion: motion, shiftHz: shift, spectrum: spectrum)

@@ -60,6 +60,7 @@ import SoundWaveCore
     private var processedFrames = 0
     private var frameAges: [Double] = []
     private var acceptedGestures = 0
+    private var corroboratedFrames = 0
     private var pendingSpaceTime: Double?
     private var confirmedSpaceChanges = 0
     private var lastSpaceChangeMS = 0.0
@@ -286,6 +287,7 @@ import SoundWaveCore
         frameAges.append(max(0, age * 1000))
         if frameAges.count > 200 { frameAges.removeFirst(frameAges.count - 200) }
         if detection.motion != 0 { motionDetections += 1 }
+        if detection.corroborated { corroboratedFrames += 1 }
         let valid = fresh && detection.signalGood && detection.calibration >= 1
         if valid && requestedControl && canControl && !controlEnabled { controlEnabled = true }
         let gesture = recognizer.update(motion: detection.motion, confidence: detection.confidence, activity: detection.activity,
@@ -357,6 +359,8 @@ import SoundWaveCore
          "testCountdown": testCountdown, "controlMessage": controlMessage,
          "gesturePhase": gesturePhase.rawValue, "response": response.rawValue,
          "acceptedGestures": acceptedGestures, "lastDirection": lastDirection, "lastGesture": lastGesture,
+         "corroboratedFrames": corroboratedFrames, "frequency": frequency,
+         "companionFrequency": CorroboratedDetector.companion(for: frequency),
          "reversed": reversed, "practiceToward": practiceToward, "practiceAway": practiceAway, "inputBlockFrames": inputBlockSize,
          "droppedSamples": droppedSamples, "processedFrames": processedFrames,
          "frameAgeMedianMS": ages.isEmpty ? 0 : ages[ages.count / 2],

@@ -44,25 +44,30 @@ final class AudioSensor {
         let outputDevice = try Self.defaultBuiltInDevice(input: false)
         let inputFormat = input.outputFormat(forBus: 0)
         let outputFormat = output.inputFormat(forBus: 0)
+        let companionFrequency = CorroboratedDetector.companion(for: frequency)
         guard inputFormat.channelCount > 0, outputFormat.channelCount > 0,
               inputFormat.sampleRate >= 44100, outputFormat.sampleRate >= 44100,
-              frequency + 1000 < min(inputFormat.sampleRate, outputFormat.sampleRate) / 2,
+              max(frequency, companionFrequency) + 1000 < min(inputFormat.sampleRate, outputFormat.sampleRate) / 2,
               let toneFormat = AVAudioFormat(standardFormatWithSampleRate: outputFormat.sampleRate, channels: 1) else {
             throw SensorError.unavailable("The audio devices need a sample rate of at least 44.1 kHz. Check Audio MIDI Setup.")
         }
-        let detector = DopplerDetector(sampleRate: inputFormat.sampleRate, frequency: frequency)
-        detector.sensitivity = sensitivity
+        let detector = CorroboratedDetector(sampleRate: inputFormat.sampleRate, frequency: frequency, sensitivity: sensitivity)
         var phase = 0.0
+        var companionPhase = 0.0
         var ramp = 0.0
         let increment = 2 * Double.pi * frequency / outputFormat.sampleRate
+        let companionIncrement = 2 * Double.pi * companionFrequency / outputFormat.sampleRate
         let level = min(0.3, max(0.01, amplitude))
         let source = AVAudioSourceNode(format: toneFormat) { _, _, count, list -> OSStatus in
             let buffers = UnsafeMutableAudioBufferListPointer(list)
             for frame in 0..<Int(count) {
                 ramp = min(1, ramp + 1 / (outputFormat.sampleRate * 0.04))
-                let sample = Float(sin(phase) * level * ramp)
+                // Divide by sqrt(2) to preserve total RMS power across the two tones.
+                let sample = Float((sin(phase) + sin(companionPhase)) * level * ramp / sqrt(2))
                 phase += increment
+                companionPhase += companionIncrement
                 if phase >= 2 * .pi { phase -= 2 * .pi }
+                if companionPhase >= 2 * .pi { companionPhase -= 2 * .pi }
                 for buffer in buffers {
                     buffer.mData?.assumingMemoryBound(to: Float.self)[frame] = sample
                 }
