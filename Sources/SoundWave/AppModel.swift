@@ -9,14 +9,23 @@ import SoundWaveCore
     @Published var starting = false
     @Published var controlEnabled = false {
         didSet {
-            emitter.reset()
+            if oldValue != controlEnabled { resetInteraction() }
             if oldValue && !controlEnabled { requestedControl = false }
         }
     }
     @Published var accessible = AXIsProcessTrusted()
     @Published var eventPostingGranted = CGPreflightPostEventAccess()
     @Published var microphone = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-    @Published var mode: ActionMode = .scroll { didSet { emitter.reset(); UserDefaults.standard.set(mode.rawValue, forKey: "mode") } }
+    @Published var mode: ActionMode = .spaces { didSet { resetInteraction(); UserDefaults.standard.set(mode.rawValue, forKey: "mode") } }
+    @Published var response: GestureResponse = .responsive { didSet { recognizer.response = response; UserDefaults.standard.set(response.rawValue, forKey: "response") } }
+    @Published var feedbackEnabled = true { didSet { UserDefaults.standard.set(feedbackEnabled, forKey: "feedbackEnabled") } }
+    @Published var practiceOnly = false
+    @Published var practiceToward = 0
+    @Published var practiceAway = 0
+    @Published var gesturePhase: GesturePhase = .settling
+    @Published var gestureProgress = 0.0
+    @Published var lastGesture = ""
+    @Published var lastDirection = 0
     @Published var frequency = 20000.0
     @Published var amplitude = 0.12
     @Published var sensitivity = 0.5
@@ -34,6 +43,8 @@ import SoundWaveCore
     @Published var controlMessage = ""
     private let sensor = AudioSensor()
     private let emitter = ActionEmitter()
+    private let hud = GestureHUD()
+    private var recognizer = GestureRecognizer()
     private var session = UUID()
     private var lastDetection = 0.0
     private var startedAt = 0.0
@@ -42,14 +53,36 @@ import SoundWaveCore
     private var requestedControl = false
     private var testTask: Task<Void, Never>?
     private var motionDetections = 0
+    private var lastUIUpdate = 0.0
+    private var lastAcceptedAt = -Double.infinity
+    private var inputBlockSize = 0
+    private var droppedSamples: UInt64 = 0
+    private var processedFrames = 0
+    private var frameAges: [Double] = []
+    private var acceptedGestures = 0
+    private var pendingSpaceTime: Double?
+    private var confirmedSpaceChanges = 0
+    private var lastSpaceChangeMS = 0.0
+    private var spaceObserver: NSObjectProtocol?
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "mode"), let value = ActionMode(rawValue: saved) { mode = value }
+        if let saved = UserDefaults.standard.string(forKey: "response"), let value = GestureResponse(rawValue: saved) { response = value }
+        if let saved = UserDefaults.standard.object(forKey: "feedbackEnabled") as? Bool { feedbackEnabled = saved }
+        recognizer.response = response
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkStatus() }
         }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.stop(); self?.message = "Paused for sleep. Start sensing when you’re ready." }
+        }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let requested = self.pendingSpaceTime else { return }
+                let elapsed = ProcessInfo.processInfo.systemUptime - requested
+                if elapsed < 1.5 { self.confirmedSpaceChanges += 1; self.lastSpaceChangeMS = elapsed * 1000 }
+                self.pendingSpaceTime = nil
+            }
         }
         if ProcessInfo.processInfo.arguments.contains("--resume-control") {
             DispatchQueue.main.async { [weak self] in self?.start(enableControl: true) }
@@ -60,6 +93,28 @@ import SoundWaveCore
     var controlAccess: ControlAccess { ControlAccess(accessibilityGranted: accessible, eventPostingGranted: eventPostingGranted) }
     var canControl: Bool { controlAccess == .ready }
     var needsPermissionRestart: Bool { controlAccess == .restartNeeded }
+    var feedbackTitle: String {
+        if starting { return "Getting ready…" }
+        if !running { return "Ready when you are." }
+        if calibration < 1 { return signalGood ? "Keep your hand still." : "Checking the sound…" }
+        if !signalGood { return "Move a little closer." }
+        if ProcessInfo.processInfo.systemUptime - lastAcceptedAt < 0.55 { return lastGesture }
+        if mode.isContinuous && abs(motion) > 0.15 { return motion > 0 ? mode.toward : mode.away }
+        switch gesturePhase {
+        case .ready: return "Ready for your gesture."
+        case .tracking: return "Following your hand…"
+        case .cooldown: return "Return your hand."
+        case .settling: return "Let your hand settle."
+        }
+    }
+    var feedbackSubtitle: String {
+        if !running { return "One deliberate move. One action. No camera." }
+        if calibration < 1 { return "Measuring the room. This takes about 3 seconds." }
+        if !signalGood { return "Keep your palm near the Mac and check speaker volume." }
+        if gesturePhase == .cooldown { return "Your gesture was accepted. Settle briefly, then go again." }
+        if practiceOnly { return "Practice freely. Your Mac won’t move until you choose Use gestures." }
+        return controlEnabled ? "Open palm above the keyboard. Push or pull, then return." : "Sensing is ready. Choose Use gestures to control your Mac."
+    }
     var status: String {
         if starting { return "Requesting microphone" }
         if !running { return "Paused" }
@@ -67,12 +122,14 @@ import SoundWaveCore
         if calibration < 1 { return "Calibrating" }
         if !accessible { return "Accessibility needed" }
         if !eventPostingGranted { return "Restart to apply permission" }
+        if practiceOnly { return "Practice mode" }
         return controlEnabled ? "Gesture control on" : "Ready · control is off"
     }
 
-    func start(enableControl: Bool = false) {
+    func start(enableControl: Bool = false, practice: Bool = false) {
         guard !starting else { return }
         stop()
+        practiceOnly = practice
         requestedControl = enableControl
         starting = true
         let token = session
@@ -88,12 +145,10 @@ import SoundWaveCore
             if enableControl && !canControl { requestAccessibility() }
             do {
                 devices = try sensor.start(frequency: frequency, amplitude: amplitude, sensitivity: sensitivity,
-                    onDetection: { [weak self] detection in
-                        let captured = ProcessInfo.processInfo.systemUptime
+                    onDetection: { [weak self] frames in
                         DispatchQueue.main.async {
-                            guard let self, self.session == token, self.running,
-                                  ProcessInfo.processInfo.systemUptime - captured < 0.2 else { return }
-                            self.receive(detection, at: captured)
+                            guard let self, self.session == token, self.running else { return }
+                            for frame in frames { self.receive(frame) }
                         }
                     }, onChange: { [weak self] in
                         Task { @MainActor in
@@ -114,6 +169,8 @@ import SoundWaveCore
         session = UUID()
         sensor.stop()
         emitter.reset()
+        resetInteraction()
+        hud.hide()
         running = false
         starting = false
         controlEnabled = false
@@ -127,6 +184,30 @@ import SoundWaveCore
         signalGood = false
         spectrum = []
         message = "Sensing paused. Microphone and tone are off."
+    }
+
+    func beginPractice() {
+        practiceToward = 0; practiceAway = 0
+        if running {
+            controlEnabled = false; requestedControl = false; practiceOnly = true; resetInteraction()
+        } else { start(practice: true) }
+    }
+
+    func useGestures() {
+        practiceOnly = false
+        requestedControl = true
+        if !running { start(enableControl: true); return }
+        if !canControl { requestAccessibility() }
+        if canControl && ready { controlEnabled = true }
+    }
+
+    private func resetInteraction() {
+        emitter.reset()
+        recognizer = GestureRecognizer(response: response)
+        gesturePhase = .settling
+        gestureProgress = 0
+        lastAcceptedAt = -.infinity
+        pendingSpaceTime = nil
     }
 
     func toggleControl() {
@@ -191,25 +272,55 @@ import SoundWaveCore
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
     }
 
-    private func receive(_ detection: Detection, at time: Double) {
+    private func receive(_ frame: SensorFrame) {
+        let time = ProcessInfo.processInfo.systemUptime
+        let detection = frame.detection
+        let age = time - frame.capturedAt
+        let fresh = age >= -0.02 && age < 0.12
         lastDetection = time
-        calibration = detection.calibration
-        signalDB = detection.signalDB
-        signalGood = detection.signalGood
-        motion = detection.motion
-        shiftHz = detection.shiftHz
-        spectrum = detection.spectrum
+        processedFrames += 1
+        inputBlockSize = frame.inputBlockSize
+        droppedSamples = frame.droppedSamples
+        frameAges.append(max(0, age * 1000))
+        if frameAges.count > 200 { frameAges.removeFirst(frameAges.count - 200) }
         if detection.motion != 0 { motionDetections += 1 }
-        if !signalGood {
-            message = "Tone is weak. Check speaker volume; try 19 kHz or a higher tone level, then recalibrate."
-        } else if calibration < 1 {
-            message = "Keep your hands still while the room’s background signal is measured."
-        } else {
-            message = "Hold an open palm 15–40 cm above the keyboard. Move toward or away from the Mac."
+        let valid = fresh && detection.signalGood && detection.calibration >= 1
+        if valid && requestedControl && canControl && !controlEnabled { controlEnabled = true }
+        let gesture = recognizer.update(motion: detection.motion, confidence: detection.confidence, activity: detection.activity,
+                                        signalGood: valid, time: frame.capturedAt)
+        if gesturePhase != gesture.phase { gesturePhase = gesture.phase }
+        if let direction = gesture.acceptedDirection {
+            acceptedGestures += 1
+            lastDirection = direction
+            lastAcceptedAt = time
+            lastGesture = (direction > 0) != reversed ? mode.toward : mode.away
+            if practiceOnly {
+                if direction > 0 { practiceToward += 1 } else { practiceAway += 1 }
+            } else if controlEnabled && canControl && !mode.isContinuous {
+                if emitter.emitGesture(mode: mode, direction: direction, reversed: reversed) {
+                    if mode == .spaces { pendingSpaceTime = time }
+                    if feedbackEnabled { hud.show(title: lastGesture, symbol: (direction > 0) != reversed ? "arrow.right" : "arrow.left") }
+                }
+            }
         }
-        if ready && requestedControl && canControl && !controlEnabled { controlEnabled = true }
-        guard ready, controlEnabled, canControl else { emitter.reset(); return }
-        emitter.update(motion: detection.motion, now: time, mode: mode, speed: speed, reversed: reversed)
+        if mode.isContinuous && controlEnabled && canControl {
+            emitter.update(motion: valid ? detection.motion : 0, now: frame.capturedAt, mode: mode, speed: speed, reversed: reversed)
+        }
+        // Gesture decisions use every frame. SwiftUI/spectrum redraws are capped at 30 Hz.
+        if time - lastUIUpdate >= 1.0 / 30 {
+            lastUIUpdate = time
+            calibration = detection.calibration
+            signalDB = detection.signalDB
+            signalGood = detection.signalGood && fresh
+            motion = detection.motion
+            shiftHz = detection.shiftHz
+            spectrum = detection.spectrum
+            gestureProgress = gesture.progress
+            if !fresh { message = "Audio processing fell behind. Hold still while it catches up." }
+            else if !signalGood { message = "Tone is weak. Move closer or try 19 kHz in Settings." }
+            else if calibration < 1 { message = "Keep your hand still while the room is measured." }
+            else { message = "Sound is clear. One gesture is accepted at a time." }
+        }
     }
 
     private func checkStatus() {
@@ -235,12 +346,19 @@ import SoundWaveCore
     }
 
     var diagnostics: [String: Any] {
-        ["running": running, "calibration": calibration, "signalGood": signalGood,
+        let ages = frameAges.sorted()
+        return ["running": running, "calibration": calibration, "signalGood": signalGood,
          "signalDB": signalDB, "message": message, "microphone": microphone, "devices": devices,
          "accessible": accessible, "canPostEvents": eventPostingGranted,
          "controlEnabled": controlEnabled, "mode": mode.rawValue, "status": status,
          "motion": motion, "motionDetections": motionDetections, "postedEvents": emitter.postedEvents,
-         "testCountdown": testCountdown, "controlMessage": controlMessage]
+         "testCountdown": testCountdown, "controlMessage": controlMessage,
+         "gesturePhase": gesturePhase.rawValue, "response": response.rawValue,
+         "acceptedGestures": acceptedGestures, "inputBlockFrames": inputBlockSize,
+         "droppedSamples": droppedSamples, "processedFrames": processedFrames,
+         "frameAgeMedianMS": ages.isEmpty ? 0 : ages[ages.count / 2],
+         "frameAgeP95MS": ages.isEmpty ? 0 : ages[min(ages.count - 1, Int(Double(ages.count) * 0.95))],
+         "confirmedSpaceChanges": confirmedSpaceChanges, "lastSpaceChangeMS": lastSpaceChangeMS]
     }
 
     private func writeDiagnosticsIfRequested() {

@@ -2,6 +2,20 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import SoundWaveCore
+import CAudioRing
+
+struct SensorFrame {
+    let detection: Detection
+    let capturedAt: Double
+    let inputBlockSize: Int
+    let droppedSamples: UInt64
+}
+
+private final class SampleRing {
+    let pointer: OpaquePointer
+    init() { pointer = SWAudioRingCreate(32768)! }
+    deinit { SWAudioRingDestroy(pointer) }
+}
 
 enum SensorError: LocalizedError {
     case unavailable(String)
@@ -13,11 +27,11 @@ enum SensorError: LocalizedError {
 final class AudioSensor {
     private var engine: AVAudioEngine?
     private var observer: NSObjectProtocol?
-    private let analysisQueue = DispatchQueue(label: "soundwave.analysis", qos: .userInitiated)
-    private let pending = DispatchSemaphore(value: 3)
+    private let analysisQueue = DispatchQueue(label: "soundwave.analysis", qos: .userInteractive)
+    private var analysisTimer: DispatchSourceTimer?
 
     func start(frequency: Double, amplitude: Double, sensitivity: Double,
-               onDetection: @escaping (Detection) -> Void,
+               onDetection: @escaping ([SensorFrame]) -> Void,
                onChange: @escaping () -> Void) throws -> String {
         stop()
         if let issue = Self.outputIssue() { throw SensorError.unavailable(issue) }
@@ -58,36 +72,60 @@ final class AudioSensor {
         audio.attach(source)
         audio.connect(source, to: audio.mainMixerNode, format: toneFormat)
         // Only the generated pilot reaches the speakers; microphone audio is never played back.
-        let queue = analysisQueue
-        let gate = pending
-        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
-            guard let channel = buffer.floatChannelData?[0], gate.wait(timeout: .now()) == .success else { return }
-            let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
-            queue.async {
-                defer { gate.signal() }
-                let detections = detector.process(samples)
-                if let latest = detections.last { onDetection(latest) }
-            }
+        let ring = SampleRing()
+        let sampleRate = inputFormat.sampleRate
+        let stride = inputFormat.isInterleaved ? Int(inputFormat.channelCount) : 1
+        let sink = AVAudioSinkNode { timestamp, count, list in
+            let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
+            guard let data = buffers.first?.mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+            let host = timestamp.pointee.mHostTime == 0 ? mach_absolute_time() : timestamp.pointee.mHostTime
+            let startTime = Double(AudioConvertHostTimeToNanos(host)) / 1_000_000_000
+            SWAudioRingWrite(ring.pointer, data, Int(count), stride, startTime, sampleRate)
+            return noErr
+        }
+        audio.attach(sink)
+        audio.connect(input, to: sink, format: inputFormat)
+        let timer = DispatchSource.makeTimerSource(queue: analysisQueue)
+        var scratch = [Float](repeating: 0, count: 2048)
+        var streamSamples = 0
+        var previousDrops: UInt64 = 0
+        timer.setEventHandler {
+            guard SWAudioRingAvailable(ring.pointer) >= 512 else { return }
+            let drops = SWAudioRingDropped(ring.pointer)
+            if drops != previousDrops { detector.discardBufferedAudio(); streamSamples = 0; previousDrops = drops }
+            var endTime = 0.0
+            let count = SWAudioRingRead(ring.pointer, &scratch, scratch.count, &endTime)
+            streamSamples += count
+            let detections = detector.process(Array(scratch.prefix(count)))
+            let duration = Double(streamSamples) / sampleRate
+            let blockSize = SWAudioRingLastBlockSize(ring.pointer)
+            let frames = detections.map { SensorFrame(detection: $0, capturedAt: endTime - (duration - $0.sampleTime), inputBlockSize: blockSize, droppedSamples: drops) }
+            if !frames.isEmpty { onDetection(frames) }
         }
         do {
             audio.prepare()
             try audio.start()
         } catch {
-            input.removeTap(onBus: 0)
+            timer.cancel()
+            timer.resume()
             audio.stop()
             throw error
         }
+        timer.schedule(deadline: .now(), repeating: .milliseconds(4), leeway: .milliseconds(1))
+        timer.resume()
+        analysisTimer = timer
         engine = audio
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio, queue: .main) { _ in onChange() }
         return "\(inputDevice.1) → \(outputDevice.1)"
     }
 
     func stop() {
+        analysisTimer?.cancel()
+        analysisTimer = nil
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
         if let engine {
             engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
         }
         engine = nil
     }

@@ -9,6 +9,7 @@ enum ActionMode: String, CaseIterable, Identifiable {
     case horizontal = "Scroll horizontally"
     case zoom = "Zoom in / out"
     var id: String { rawValue }
+    var isContinuous: Bool { self == .scroll || self == .horizontal }
     var symbol: String {
         switch self {
         case .scroll: return "arrow.up.arrow.down"
@@ -43,7 +44,7 @@ enum ActionMode: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "Place the pointer over your PDF or page. Push or pull to scroll; return your hand slowly."
         case .pages: return "Sends Page Down / Page Up to the active PDF reader. Pause briefly between gestures."
-        case .spaces: return "Sends Control–Right / Left. Enable these Mission Control shortcuts in System Settings → Keyboard."
+        case .spaces: return "Push for the next desktop. Pull for the previous one. Let your hand settle before the next gesture."
         case .apps: return "Uses Command–Tab / Command–Shift–Tab. Repeated next gestures toggle recent apps."
         case .horizontal: return "Place the pointer over a wide document, timeline, or horizontally scrollable page."
         case .zoom: return "Sends Command–Plus / Minus. Works in readers and browsers that support these shortcuts."
@@ -52,14 +53,10 @@ enum ActionMode: String, CaseIterable, Identifiable {
 }
 
 final class ActionEmitter {
-    private let keyboardQueue = DispatchQueue(label: "soundwave.keyboard")
+    private let keyboardQueue = DispatchQueue(label: "soundwave.keyboard", qos: .userInteractive)
     private(set) var postedEvents = 0
     private var scroller = ScrollController()
-    private var armed = true
-    private var neutralSince: Double?
-    private var lastAction = -Double.infinity
-
-    func reset() { scroller.reset(); armed = true; neutralSince = nil; lastAction = -.infinity }
+    func reset() { scroller.reset() }
 
     func update(motion: Double, now: Double, mode: ActionMode, speed: Double, reversed: Bool) {
         guard ControlAccess(accessibilityGranted: AXIsProcessTrusted(), eventPostingGranted: CGPreflightPostEventAccess()) == .ready else { reset(); return }
@@ -69,17 +66,13 @@ final class ActionEmitter {
             scroll(pixels: delta, horizontal: mode == .horizontal)
             return
         }
-        if motion == 0 {
-            if neutralSince == nil { neutralSince = now }
-            if now - (neutralSince ?? now) > 0.3 { armed = true }
-            return
-        }
-        neutralSince = nil
-        guard armed, now - lastAction > 0.8 else { return }
-        armed = false
-        lastAction = now
-        let forward = (motion > 0) != reversed
-        performDiscrete(mode: mode, forward: forward)
+    }
+
+    @discardableResult func emitGesture(mode: ActionMode, direction: Int, reversed: Bool) -> Bool {
+        guard !mode.isContinuous, AXIsProcessTrusted(), CGPreflightPostEventAccess() else { return false }
+        let before = postedEvents
+        performDiscrete(mode: mode, forward: (direction > 0) != reversed)
+        return postedEvents > before
     }
 
     @discardableResult func test(mode: ActionMode, reversed: Bool) -> Bool {
@@ -125,22 +118,22 @@ final class ActionEmitter {
                 let event = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: true)
                 event?.flags = held
                 event?.post(tap: .cghidEventTap)
-                Thread.sleep(forTimeInterval: 0.03)
+                Thread.sleep(forTimeInterval: 0.008)
             }
             let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
             down?.flags = keyFlags
             down?.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.06)
+            Thread.sleep(forTimeInterval: 0.016)
             let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
             up?.flags = keyFlags
             up?.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.03)
+            Thread.sleep(forTimeInterval: 0.008)
             for (flag, modifier) in pressed.reversed() {
                 held.remove(flag)
                 let release = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: false)
                 release?.flags = held
                 release?.post(tap: .cghidEventTap)
-                Thread.sleep(forTimeInterval: 0.02)
+                Thread.sleep(forTimeInterval: 0.004)
             }
         }
     }

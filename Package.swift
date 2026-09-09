@@ -6,8 +6,9 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.executable(name: "SoundWave", targets: ["SoundWave"])],
     targets: [
+        .target(name: "CAudioRing"),
         .target(name: "SoundWaveCore"),
-        .executableTarget(name: "SoundWave", dependencies: ["SoundWaveCore"]),
-        .testTarget(name: "SoundWaveCoreTests", dependencies: ["SoundWaveCore"])
+        .executableTarget(name: "SoundWave", dependencies: ["SoundWaveCore", "CAudioRing"]),
+        .testTarget(name: "SoundWaveCoreTests", dependencies: ["SoundWaveCore", "CAudioRing"])
     ]
 )

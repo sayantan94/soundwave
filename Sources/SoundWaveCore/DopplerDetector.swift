@@ -9,6 +9,10 @@ public struct Detection {
     public var motion: Double
     public var shiftHz: Double
     public var spectrum: [Double]
+    public var confidence: Double = 0
+    public var activity: Double = 0
+    public var sampleTime: Double = 0
+    public var signalToNoiseDB: Double = 0
 }
 
 /// A streaming, overlapping FFT detector. All access belongs on one analysis queue.
@@ -17,7 +21,7 @@ public final class DopplerDetector {
     public let frequency: Double
     public var sensitivity: Double = 0.5
     private let size = 4096
-    private let hop = 1024
+    private let hop = 512
     private let setup: FFTSetup
     private var window: [Float]
     private var real: [Float]
@@ -29,6 +33,7 @@ public final class DopplerDetector {
     private var consecutive = 0
     private var settlingFrames: Int
     private let calibrationFrames: Int
+    private var processedSamples = 0
 
     public init(sampleRate: Double, frequency: Double) {
         precondition(sampleRate >= 44100 && frequency > 1000 && frequency + 1000 < sampleRate / 2)
@@ -47,6 +52,14 @@ public final class DopplerDetector {
 
     deinit { vDSP_destroy_fftsetup(setup) }
 
+    /// Keep room calibration, but don't bridge a discontinuity in captured audio.
+    public func discardBufferedAudio() {
+        pending.removeAll(keepingCapacity: true)
+        processedSamples = 0
+        candidate = 0
+        consecutive = 0
+    }
+
     public func process(_ samples: [Float]) -> [Detection] {
         pending.append(contentsOf: samples)
         var output: [Detection] = []
@@ -62,8 +75,11 @@ public final class DopplerDetector {
                     vDSP_fft_zip(setup, &complex, 1, 12, FFTDirection(FFT_FORWARD))
                 }
             }
-            output.append(analyze())
+            var detection = analyze()
+            detection.sampleTime = Double(processedSamples + size) / sampleRate
+            output.append(detection)
             offset += hop
+            processedSamples += hop
         }
         if offset > 0 { pending.removeFirst(offset) }
         return output
@@ -124,7 +140,7 @@ public final class DopplerDetector {
         else { candidate = direction; consecutive = direction == 0 ? 0 : 1 }
         var shift = 0.0
         var motion = 0.0
-        if consecutive >= 3 {
+        if consecutive >= 2 {
             shift = direction > 0 ? highWeighted / high : -lowWeighted / low
             motion = Double(direction) * min(1, max(0.2, abs(shift) / 300))
         }
@@ -134,6 +150,11 @@ public final class DopplerDetector {
                 baseline[i] += 0.002 * (relative - baseline[i])
             }
         }
-        return Detection(calibration: 1, signalDB: signalDB, signalGood: signalGood, motion: motion, shiftHz: shift, spectrum: spectrum)
+        var detection = Detection(calibration: 1, signalDB: signalDB, signalGood: signalGood, motion: motion, shiftHz: shift, spectrum: spectrum)
+        let strength = max(low, high)
+        detection.confidence = abs(high - low) / max(1e-12, high + low) * min(1, strength / (threshold * 4))
+        detection.activity = min(1, (low + high) / (threshold * 4))
+        detection.signalToNoiseDB = 10 * log10(max(pilot, 1e-12) / noise)
+        return detection
     }
 }
