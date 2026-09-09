@@ -31,7 +31,7 @@ final class GesturePipelineTests: XCTestCase {
 
     func testShortStrokeIsAcceptedWithinOneHundredMillisecondsOfSyntheticEchoOnset() {
         var latencies: [Double] = []
-        for shift in [-150.0, 180.0] {
+        for shift in [-150.0, -55.0, 55.0, 180.0] {
             for onset in [3.7, 3.707] {
                 let events = replay(onset: onset, shift: shift)
                 XCTAssertEqual(events.count, 1)
@@ -45,7 +45,9 @@ final class GesturePipelineTests: XCTestCase {
     }
 
     func testPushThenReturnProducesExactlyOneActionThroughFullDSPPipeline() {
-        let events = replay(onset: 3.7, shift: 180, returnStroke: true)
-        XCTAssertEqual(events.map(\.1), [1])
+        for shift in [-180.0, -55.0, 55.0, 180.0] {
+            let events = replay(onset: 3.7, shift: shift, returnStroke: true)
+            XCTAssertEqual(events.map(\.1), [shift > 0 ? 1 : -1])
+        }
     }
 }

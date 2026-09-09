@@ -30,7 +30,7 @@ import SoundWaveCore
     @Published var amplitude = 0.12
     @Published var sensitivity = 0.5
     @Published var speed = 650.0
-    @Published var reversed = false
+    @Published var reversed = false { didSet { resetInteraction(); UserDefaults.standard.set(reversed, forKey: "reversed") } }
     @Published var calibration = 0.0
     @Published var signalGood = false
     @Published var signalDB = -120.0
@@ -69,6 +69,7 @@ import SoundWaveCore
         if let saved = UserDefaults.standard.string(forKey: "mode"), let value = ActionMode(rawValue: saved) { mode = value }
         if let saved = UserDefaults.standard.string(forKey: "response"), let value = GestureResponse(rawValue: saved) { response = value }
         if let saved = UserDefaults.standard.object(forKey: "feedbackEnabled") as? Bool { feedbackEnabled = saved }
+        reversed = UserDefaults.standard.bool(forKey: "reversed")
         recognizer.response = response
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkStatus() }
@@ -99,7 +100,7 @@ import SoundWaveCore
         if calibration < 1 { return signalGood ? "Keep your hand still." : "Checking the sound…" }
         if !signalGood { return "Move a little closer." }
         if ProcessInfo.processInfo.systemUptime - lastAcceptedAt < 0.55 { return lastGesture }
-        if mode.isContinuous && abs(motion) > 0.15 { return motion > 0 ? mode.toward : mode.away }
+        if mode.isContinuous && abs(motion) > 0.15 { return (motion > 0) != reversed ? mode.toward : mode.away }
         switch gesturePhase {
         case .ready: return "Ready for your gesture."
         case .tracking: return "Following your hand…"
@@ -113,7 +114,7 @@ import SoundWaveCore
         if !signalGood { return "Keep your palm near the Mac and check speaker volume." }
         if gesturePhase == .cooldown { return "Your gesture was accepted. Settle briefly, then go again." }
         if practiceOnly { return "Practice freely. Your Mac won’t move until you choose Use gestures." }
-        return controlEnabled ? "Open palm above the keyboard. Push or pull, then return." : "Sensing is ready. Choose Use gestures to control your Mac."
+        return controlEnabled ? "Palm 15–30 cm above the keyboard. Lower or lift, then settle." : "Sensing is ready. Choose Use gestures to control your Mac."
     }
     var status: String {
         if starting { return "Requesting microphone" }
@@ -173,6 +174,7 @@ import SoundWaveCore
         hud.hide()
         running = false
         starting = false
+        practiceOnly = false
         controlEnabled = false
         requestedControl = false
         testTask?.cancel()
@@ -354,7 +356,8 @@ import SoundWaveCore
          "motion": motion, "motionDetections": motionDetections, "postedEvents": emitter.postedEvents,
          "testCountdown": testCountdown, "controlMessage": controlMessage,
          "gesturePhase": gesturePhase.rawValue, "response": response.rawValue,
-         "acceptedGestures": acceptedGestures, "inputBlockFrames": inputBlockSize,
+         "acceptedGestures": acceptedGestures, "lastDirection": lastDirection, "lastGesture": lastGesture,
+         "reversed": reversed, "practiceToward": practiceToward, "practiceAway": practiceAway, "inputBlockFrames": inputBlockSize,
          "droppedSamples": droppedSamples, "processedFrames": processedFrames,
          "frameAgeMedianMS": ages.isEmpty ? 0 : ages[ages.count / 2],
          "frameAgeP95MS": ages.isEmpty ? 0 : ages[min(ages.count - 1, Int(Double(ages.count) * 0.95))],

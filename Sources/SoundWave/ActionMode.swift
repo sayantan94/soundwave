@@ -24,7 +24,7 @@ enum ActionMode: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "Scroll down"
         case .pages: return "Next page"
-        case .spaces: return "Next desktop"
+        case .spaces: return "Desktop to the right"
         case .apps: return "Next app"
         case .horizontal: return "Scroll right"
         case .zoom: return "Zoom in"
@@ -34,7 +34,7 @@ enum ActionMode: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "Scroll up"
         case .pages: return "Previous page"
-        case .spaces: return "Previous desktop"
+        case .spaces: return "Desktop to the left"
         case .apps: return "Previous app"
         case .horizontal: return "Scroll left"
         case .zoom: return "Zoom out"
@@ -44,7 +44,7 @@ enum ActionMode: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "Place the pointer over your PDF or page. Push or pull to scroll; return your hand slowly."
         case .pages: return "Sends Page Down / Page Up to the active PDF reader. Pause briefly between gestures."
-        case .spaces: return "Push for the next desktop. Pull for the previous one. Let your hand settle before the next gesture."
+        case .spaces: return "Lower your palm toward the keyboard for the desktop to the right. Lift it for the desktop to the left. Settle between gestures."
         case .apps: return "Uses Command–Tab / Command–Shift–Tab. Repeated next gestures toggle recent apps."
         case .horizontal: return "Place the pointer over a wide document, timeline, or horizontally scrollable page."
         case .zoom: return "Sends Command–Plus / Minus. Works in readers and browsers that support these shortcuts."

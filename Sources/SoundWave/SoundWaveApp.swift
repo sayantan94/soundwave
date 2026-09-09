@@ -17,7 +17,7 @@ import AVFoundation
                         delegate.mainWindow?.isReleasedWhenClosed = false
                     }
                 }
-                .frame(minWidth: 840, idealWidth: 940, minHeight: 720, idealHeight: 800)
+                .frame(minWidth: 740, idealWidth: 800, minHeight: 640, idealHeight: 730)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)

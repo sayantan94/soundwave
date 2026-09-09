@@ -116,8 +116,9 @@ public final class DopplerDetector {
         }
 
         var low = 0.0, high = 0.0, lowWeighted = 0.0, highWeighted = 0.0
-        // A dead band rejects the direct tone and slow return movements.
-        let deadBand = max(4, Int(75 / binHz))
+        // Keep the pilot's main lobe out, but retain moderate hand movements.
+        // A 75 Hz cutoff missed these strokes and could accept their faster return.
+        let deadBand = max(3, Int(ceil(40 / binHz)))
         let threshold = 0.025 * pow(0.08, min(1, max(0, sensitivity)))
         for i in range where abs(i - center) >= deadBand {
             let relative = power[i] / max(pilot, 1e-12)

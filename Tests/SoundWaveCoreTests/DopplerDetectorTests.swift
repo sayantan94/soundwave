@@ -52,6 +52,16 @@ final class DopplerDetectorTests: XCTestCase {
         XCTAssertTrue(output.allSatisfy { $0.motion == 0 })
     }
 
+    func testModerateSpeedGesturesKeepTheirDirection() {
+        for rate in [44100.0, 48000.0] {
+            for shift in [-55.0, 55.0] {
+                let detector = calibrated(rate: rate)
+                let output = detector.process(samples(rate: rate, duration: 0.3, offset: Int(rate * 3.5), shift: shift, echo: 0.035))
+                XCTAssertTrue(output.suffix(8).allSatisfy { $0.motion * shift > 0 }, "Missed moderate stroke \(shift) at \(rate)")
+            }
+        }
+    }
+
     func testSignalLossStopsMotion() {
         let detector = calibrated()
         _ = detector.process(samples(duration: 0.5, offset: 168000, shift: 180, echo: 0.035))
