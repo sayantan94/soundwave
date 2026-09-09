@@ -18,6 +18,8 @@ The script builds for the current Mac architecture, creates the app icon and bun
 
 Calibration measures the relative background spectrum. Detection compares excess energy on either side of the pilot, excludes bins within 40 Hz (rounded up to a whole bin), checks signal quality, rejects ambiguous bidirectional motion, and requires two agreeing frames. The previous 75 Hz exclusion missed moderate-speed strokes, sometimes leaving only their faster return detectable. This is inspired by the Doppler principle in the paper, with a different calibrated detection algorithm.
 
+Before the FFT, a precomputed complex window shifts the pilot exactly onto its nearest bin. Merely rounding the analysis index gave the two directions unequal exclusion regions and could turn symmetric loudness modulation into a false left gesture. Regression tests cover that failure and equal confidence for opposite echoes at multiple tone frequencies and sample rates.
+
 The timestamp-based recognizer requires consistent direction and confidence, then locks out return strokes until a cooldown and a quiet interval have both passed. Lost or stale audio requires stillness before rearming. Response presets adjust these thresholds. Practice mode shows accepted directions without emitting actions. A nonactivating panel gives immediate gesture feedback across Spaces; it confirms recognition, not whether the target app handled the command.
 
 `CGEvent` sends pixel scrolling and keyboard shortcuts. A Carbon hotkey provides a global stop without installing a keyboard event tap. The audio engine is only started by the user. Audio samples stay in memory for analysis; there is no audio recording, network client, camera access, telemetry, or external service.

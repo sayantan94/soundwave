@@ -24,6 +24,7 @@ public final class DopplerDetector {
     private let hop = 512
     private let setup: FFTSetup
     private var window: [Float]
+    private var imaginaryWindow: [Float]
     private var real: [Float]
     private var imaginary: [Float]
     private var pending: [Float] = []
@@ -41,12 +42,23 @@ public final class DopplerDetector {
         self.frequency = frequency
         self.setup = vDSP_create_fftsetup(12, FFTRadix(kFFTRadix2))!
         window = [Float](repeating: 0, count: size)
+        imaginaryWindow = window
         real = window
         imaginary = window
         baseline = [Double](repeating: 0, count: size / 2)
         calibrationFrames = Int(2.5 * sampleRate / Double(hop))
         settlingFrames = Int(0.3 * sampleRate / Double(hop))
         vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
+        // Center the actual pilot on an FFT bin before comparing its two sides.
+        // Rounding only the analysis index gave one side a different dead band:
+        // symmetric loudness changes could then masquerade as directional motion.
+        let binHz = sampleRate / Double(size)
+        let offset = frequency - (frequency / binHz).rounded() * binHz
+        for i in 0..<size {
+            let angle = -2 * Double.pi * offset * Double(i) / sampleRate
+            imaginaryWindow[i] = window[i] * Float(sin(angle))
+            window[i] *= Float(cos(angle))
+        }
         pending.reserveCapacity(size * 3)
     }
 
@@ -67,7 +79,7 @@ public final class DopplerDetector {
         while pending.count - offset >= size {
             for i in 0..<size {
                 real[i] = pending[offset + i] * window[i]
-                imaginary[i] = 0
+                imaginary[i] = pending[offset + i] * imaginaryWindow[i]
             }
             real.withUnsafeMutableBufferPointer { r in
                 imaginary.withUnsafeMutableBufferPointer { im in

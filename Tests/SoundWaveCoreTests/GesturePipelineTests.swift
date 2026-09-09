@@ -2,6 +2,33 @@ import XCTest
 @testable import SoundWaveCore
 
 final class GesturePipelineTests: XCTestCase {
+    func testChangingToneLoudnessCannotChooseADesktopDirection() {
+        // A hand can change the direct tone's loudness without a directional echo.
+        // Amplitude modulation creates equal sidebands and must remain ambiguous.
+        for rate in [44100.0, 48000.0] {
+            for frequency in [19000.0, 20000.0, 20250.0] {
+                for modulation in [35.0, 45.0] {
+                    let detector = DopplerDetector(sampleRate: rate, frequency: frequency)
+                    var recognizer = GestureRecognizer()
+                    var events: [Int] = []
+                    for start in stride(from: 0, to: Int(rate * 4.5), by: 512) {
+                        let audio = (start..<(start + 512)).map { index -> Float in
+                            let time = Double(index) / rate
+                            let envelope = time < 3.7 ? 1 : 1 + 0.7 * sin(2 * .pi * modulation * time)
+                            return Float(0.15 * envelope * sin(2 * .pi * frequency * time))
+                        }
+                        for frame in detector.process(audio) {
+                            let result = recognizer.update(motion: frame.motion, confidence: frame.confidence, activity: frame.activity,
+                                signalGood: frame.signalGood && frame.calibration >= 1, time: frame.sampleTime)
+                            if let direction = result.acceptedDirection { events.append(direction) }
+                        }
+                    }
+                    XCTAssertTrue(events.isEmpty, "Loudness modulation at \(modulation) Hz around \(frequency) Hz / \(rate) chose \(events)")
+                }
+            }
+        }
+    }
+
     private func replay(onset: Double, shift: Double, returnStroke: Bool = false) -> [(Double, Int)] {
         let rate = 48000.0
         let detector = DopplerDetector(sampleRate: rate, frequency: 20000)

@@ -62,6 +62,23 @@ final class DopplerDetectorTests: XCTestCase {
         }
     }
 
+    func testEqualEchoesHaveEqualConfidenceInBothDirections() {
+        for rate in [44100.0, 48000.0] {
+            for frequency in [19000.0, 20000.0, 20250.0] {
+                var confidences: [Double] = []
+                for shift in [-55.0, 55.0] {
+                    let detector = calibrated(rate: rate, frequency: frequency)
+                    let frames = detector.process(samples(rate: rate, frequency: frequency, duration: 0.3,
+                        offset: Int(rate * 3.5), shift: shift, echo: 0.025)).suffix(8)
+                    XCTAssertTrue(frames.allSatisfy { $0.motion * shift > 0 })
+                    confidences.append(frames.map(\.confidence).reduce(0, +) / Double(frames.count))
+                }
+                XCTAssertEqual(confidences[0], confidences[1], accuracy: 0.02,
+                    "Unequal direction confidence at \(frequency) Hz / \(rate)")
+            }
+        }
+    }
+
     func testSignalLossStopsMotion() {
         let detector = calibrated()
         _ = detector.process(samples(duration: 0.5, offset: 168000, shift: 180, echo: 0.035))
